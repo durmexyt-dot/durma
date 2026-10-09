@@ -81,7 +81,7 @@
 </main>
 
 <script type="module">
-  import { sharePage } from './share-page.js';
+  import { sharePage, PREVIEW_W, PREVIEW_H } from './share-page.js';
 
   const OWNER = 'durmexyt-dot', REPO = 'durma', BRANCH = 'dev', PATH = 'gifs/gifs.json';
   const REPO_API = `https://api.github.com/repos/${OWNER}/${REPO}`;
@@ -92,6 +92,7 @@
   // published = Stand im Repo, draft = lokale Änderungen, die erst mit „Push“ hochgeladen werden
   let published = [];
   let draft = [];
+  let missingPreviews = 0;
 
   function load(key) { try { return localStorage.getItem(key) || ''; } catch (e) { return ''; } }
 
@@ -135,8 +136,10 @@
   function render() {
     const added = draft.filter(g => !published.includes(g)).length;
     const removed = published.filter(g => !draft.includes(g)).length;
-    $('pushBar').hidden = !added && !removed;
-    $('pushInfo').textContent = [added && `${added} neu`, removed && `${removed} entfernt`].filter(Boolean).join(', ') + ' – noch nicht gepusht';
+    $('pushBar').hidden = !added && !removed && !missingPreviews;
+    $('pushInfo').textContent = added || removed
+      ? [added && `${added} neu`, removed && `${removed} entfernt`].filter(Boolean).join(', ') + ' – noch nicht gepusht'
+      : (missingPreviews > 1 ? `${missingPreviews} Vorschaubilder für Link-Vorschau fehlen` : '1 Vorschaubild für Link-Vorschau fehlt') + ' – Push erzeugt sie';
 
     listEl.innerHTML = '';
     if (!draft.length) {
@@ -171,6 +174,35 @@
   }
   const json = async r => { if (!r.ok) throw new Error('GitHub-Fehler ' + r.status); return r.json(); };
 
+  // Erstes Bild des GIFs als JPEG (schwarzer Rand, 1200×630) – base64 ohne Präfix, oder null wenn es nicht geht
+  function makePreview(gif) {
+    return new Promise(resolve => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        try {
+          const c = document.createElement('canvas');
+          c.width = PREVIEW_W; c.height = PREVIEW_H;
+          const ctx = c.getContext('2d');
+          ctx.fillStyle = '#000'; ctx.fillRect(0, 0, c.width, c.height);
+          const scale = Math.min(c.width / img.naturalWidth, c.height / img.naturalHeight);
+          const w = img.naturalWidth * scale, h = img.naturalHeight * scale;
+          ctx.drawImage(img, (c.width - w) / 2, (c.height - h) / 2, w, h);
+          resolve(c.toDataURL('image/jpeg', 0.85).split(',')[1]);
+        } catch (e) { resolve(null); } // Server erlaubt kein CORS → Bild nicht auslesbar
+      };
+      img.onerror = () => resolve(null);
+      img.src = src(gif);
+    });
+  }
+
+  // Alle Dateipfade im Repo zu einem Commit
+  async function repoPaths(commitSha) {
+    const treeSha = (await json(await api(`/git/commits/${commitSha}`))).tree.sha;
+    const tree = await json(await api(`/git/trees/${treeSha}?recursive=1`));
+    return { treeSha, paths: new Set(tree.tree.map(e => e.path)) };
+  }
+
   // Aktuellen Stand direkt aus dem Repo laden (ohne Pages-Cache)
   async function fetchList(ref = BRANCH) {
     const data = await json(await api(`/contents/${PATH}?ref=${ref}`));
@@ -191,14 +223,34 @@
         const added = draft.filter(g => !published.includes(g));
         const removed = new Set(published.filter(g => !draft.includes(g)));
         const next = remote.filter(g => !removed.has(g)).concat(added.filter(g => !remote.includes(g)));
-        const root = await json(await api(`/contents/?ref=${head}`));
-        const oldPages = root.filter(f => f.type === 'dir' && /^[0-9]+$/.test(f.name)).map(f => +f.name);
-        const tree = [
-          { path: PATH, mode: '100644', type: 'blob', content: JSON.stringify(next, null, 2) + '\n' },
-          ...next.map((g, i) => ({ path: `${i + 1}/index.html`, mode: '100644', type: 'blob', content: sharePage(i + 1, g) })),
-          ...oldPages.filter(n => n > next.length).map(n => ({ path: `${n}/index.html`, mode: '100644', type: 'blob', sha: null }))
-        ];
-        const baseTree = (await json(await api(`/git/commits/${head}`))).tree.sha;
+        const { treeSha: baseTree, paths } = await repoPaths(head);
+        const file = (path, content) => ({ path, mode: '100644', type: 'blob', content });
+        const remove = path => ({ path, mode: '100644', type: 'blob', sha: null });
+        const tree = [file(PATH, JSON.stringify(next, null, 2) + '\n')];
+
+        for (let i = 0; i < next.length; i++) {
+          const n = i + 1, previewPath = `${n}/preview.jpg`;
+          // Vorschaubild nur neu erzeugen, wenn an dieser Stelle ein anderes GIF steht oder es fehlt
+          let hasPreview = paths.has(previewPath) && remote[i] === next[i];
+          if (!hasPreview) {
+            setStatus(`Erzeuge Vorschaubild ${n} / ${next.length} …`);
+            const jpeg = await makePreview(next[i]);
+            if (jpeg) {
+              const blob = await json(await api('/git/blobs', { method: 'POST', body: JSON.stringify({ content: jpeg, encoding: 'base64' }) }));
+              tree.push({ path: previewPath, mode: '100644', type: 'blob', sha: blob.sha });
+              hasPreview = true;
+            } else if (paths.has(previewPath)) {
+              tree.push(remove(previewPath)); // veraltetes Bild eines anderen GIFs
+            }
+          }
+          tree.push(file(`${n}/index.html`, sharePage(n, next[i], hasPreview)));
+        }
+        // Seiten hinter dem Listenende löschen
+        for (const path of paths) {
+          const m = path.match(/^([0-9]+)\/(index\.html|preview\.jpg)$/);
+          if (m && +m[1] > next.length) tree.push(remove(path));
+        }
+        setStatus('Pushe …');
         const newTree = await json(await api('/git/trees', { method: 'POST', body: JSON.stringify({ base_tree: baseTree, tree }) }));
         const commit = await json(await api('/git/commits', { method: 'POST', body: JSON.stringify({
           message: `Update GIFs (+${added.length} / -${removed.size})`, tree: newTree.sha, parents: [head]
@@ -209,6 +261,7 @@
         await json(r);
         published = next;
         draft = next.slice();
+        missingPreviews = 0;
         saveDraft();
         render();
         setStatus('Gepusht. Auf der Seite sichtbar in ca. 1 Minute.', 'ok');
@@ -246,6 +299,9 @@
     setStatus('Lade …');
     try {
       published = await fetchList();
+      const head = (await json(await api(`/git/ref/heads/${BRANCH}`))).object.sha;
+      const { paths } = await repoPaths(head);
+      missingPreviews = published.filter((g, i) => !paths.has(`${i + 1}/preview.jpg`)).length;
       setStatus('');
     } catch (e) {
       // Ohne Token: öffentliche Liste der Seite anzeigen
