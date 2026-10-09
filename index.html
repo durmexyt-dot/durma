@@ -2,10 +2,120 @@
 <html lang="de">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Hello World</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>GIFs</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; }
+    html, body { height: 100%; background: #000; overflow: hidden; }
+    body { font-family: system-ui, sans-serif; color: #fff; user-select: none; -webkit-user-select: none; }
+    #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+    #gif { width: 100%; height: 100%; object-fit: contain; }
+    .nav {
+      position: fixed; top: 50%; transform: translateY(-50%);
+      width: 64px; height: 64px; border: 0; border-radius: 50%;
+      background: rgba(255, 255, 255, .15); color: #fff; font-size: 32px; line-height: 1;
+      cursor: pointer; transition: background .15s, opacity .3s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .nav:hover, .nav:focus-visible { background: rgba(255, 255, 255, .3); outline: none; }
+    #prev { left: max(16px, env(safe-area-inset-left)); }
+    #next { right: max(16px, env(safe-area-inset-right)); }
+    #counter {
+      position: fixed; bottom: max(16px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
+      padding: 4px 12px; border-radius: 999px; background: rgba(0, 0, 0, .5); font-size: 14px;
+      transition: opacity .3s;
+    }
+    #fs {
+      position: fixed; top: max(16px, env(safe-area-inset-top)); right: max(16px, env(safe-area-inset-right));
+      width: 44px; height: 44px; border: 0; border-radius: 50%;
+      background: rgba(255, 255, 255, .15); color: #fff; font-size: 20px; cursor: pointer; transition: opacity .3s;
+    }
+    body.idle .nav, body.idle #counter, body.idle #fs { opacity: 0; }
+    body.idle { cursor: none; }
+    #msg { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 16px; text-align: center; }
+  </style>
 </head>
 <body>
-  <h1>Hello World</h1>
+  <div id="stage"><img id="gif" alt=""></div>
+  <button id="prev" class="nav" aria-label="Vorheriges GIF">&#8249;</button>
+  <button id="next" class="nav" aria-label="Nächstes GIF">&#8250;</button>
+  <button id="fs" aria-label="Vollbild">&#x26F6;</button>
+  <div id="counter"></div>
+  <div id="msg"></div>
+
+  <script>
+    const img = document.getElementById('gif');
+    const counter = document.getElementById('counter');
+    let gifs = [];
+    let index = 0;
+
+    function show(i) {
+      index = (i + gifs.length) % gifs.length;
+      img.src = 'gifs/' + gifs[index];
+      counter.textContent = (index + 1) + ' / ' + gifs.length;
+      history.replaceState(null, '', '#' + (index + 1));
+      // Nachbarn vorladen, damit das Wechseln sofort geht
+      [index + 1, index - 1].forEach(n => { new Image().src = 'gifs/' + gifs[(n + gifs.length) % gifs.length]; });
+    }
+
+    const next = () => show(index + 1);
+    const prev = () => show(index - 1);
+
+    document.getElementById('next').addEventListener('click', next);
+    document.getElementById('prev').addEventListener('click', prev);
+    document.addEventListener('keydown', e => {
+      if (e.key === 'ArrowRight' || e.key === ' ') next();
+      if (e.key === 'ArrowLeft') prev();
+      if (e.key === 'f') toggleFullscreen();
+    });
+
+    // Wischen auf dem Handy
+    let touchX = null;
+    document.addEventListener('touchstart', e => { touchX = e.touches[0].clientX; }, { passive: true });
+    document.addEventListener('touchend', e => {
+      if (touchX === null) return;
+      const dx = e.changedTouches[0].clientX - touchX;
+      if (Math.abs(dx) > 50) (dx < 0 ? next : prev)();
+      touchX = null;
+    });
+
+    // Echter Vollbildmodus (wo der Browser es unterstützt)
+    const fsBtn = document.getElementById('fs');
+    function toggleFullscreen() {
+      const el = document.documentElement;
+      if (document.fullscreenElement || document.webkitFullscreenElement) {
+        (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+      } else if (el.requestFullscreen || el.webkitRequestFullscreen) {
+        (el.requestFullscreen || el.webkitRequestFullscreen).call(el);
+      }
+    }
+    if (!(document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen)) fsBtn.hidden = true;
+    fsBtn.addEventListener('click', toggleFullscreen);
+
+    // Bedienelemente nach 2,5 s ohne Bewegung ausblenden
+    let idleTimer;
+    function wake() {
+      document.body.classList.remove('idle');
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => document.body.classList.add('idle'), 2500);
+    }
+    ['mousemove', 'touchstart', 'keydown'].forEach(ev => document.addEventListener(ev, wake, { passive: true }));
+    wake();
+
+    fetch('gifs/gifs.json', { cache: 'no-cache' })
+      .then(r => r.json())
+      .then(list => {
+        gifs = list;
+        if (!gifs.length) throw new Error('leer');
+        const start = parseInt(location.hash.slice(1), 10);
+        show(Number.isFinite(start) ? start - 1 : 0);
+      })
+      .catch(() => {
+        const msg = document.getElementById('msg');
+        msg.textContent = 'Keine GIFs gefunden. Lege GIFs in den Ordner "gifs" und trage sie in gifs/gifs.json ein.';
+        msg.style.display = 'flex';
+        document.querySelectorAll('.nav, #counter').forEach(el => el.hidden = true);
+      });
+  </script>
 </body>
 </html>
