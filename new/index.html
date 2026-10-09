@@ -65,15 +65,16 @@
   <ul id="list"></ul>
 </main>
 
-<script>
+<script type="module">
+  import { sharePage } from './share-page.js';
+
   const OWNER = 'durmexyt-dot', REPO = 'durma', BRANCH = 'dev', PATH = 'gifs/gifs.json';
-  const API = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${PATH}`;
+  const REPO_API = `https://api.github.com/repos/${OWNER}/${REPO}`;
 
   const $ = id => document.getElementById(id);
   const tokenInput = $('token'), urlInput = $('url'), createBtn = $('create'), listEl = $('list'), statusEl = $('status');
 
   let gifs = [];
-  let sha = null;
 
   function load(key) { try { return localStorage.getItem(key) || ''; } catch (e) { return ''; } }
 
@@ -103,11 +104,6 @@
     const bytes = Uint8Array.from(atob(b64.replace(/\n/g, '')), c => c.charCodeAt(0));
     return new TextDecoder().decode(bytes);
   }
-  function encode(text) {
-    let bin = '';
-    new TextEncoder().encode(text).forEach(b => bin += String.fromCharCode(b));
-    return btoa(bin);
-  }
 
   function render() {
     listEl.innerHTML = '';
@@ -129,14 +125,22 @@
     });
   }
 
-  // Aktuellen Stand direkt aus dem Repo laden (ohne Pages-Cache)
-  async function fetchList() {
-    const r = await fetch(`${API}?ref=${BRANCH}&t=${Date.now()}`, { headers: headers(), cache: 'no-store' });
+  async function api(path, options = {}) {
+    const r = await fetch(REPO_API + path, {
+      ...options,
+      cache: 'no-store',
+      headers: { ...headers(), ...(options.body ? { 'Content-Type': 'application/json' } : {}) }
+    });
     if (r.status === 401) throw new Error('Token ungültig.');
-    if (r.status === 404) throw new Error(tokenInput.value.trim() ? 'Kein Zugriff – hat der Token Rechte auf das Repo?' : 'Bitte zuerst den GitHub-Token eintragen.');
-    if (!r.ok) throw new Error('GitHub-Fehler ' + r.status);
-    const data = await r.json();
-    sha = data.sha;
+    if (r.status === 404 && !options.method) throw new Error(tokenInput.value.trim() ? 'Kein Zugriff – hat der Token Rechte auf das Repo?' : 'Bitte zuerst den GitHub-Token eintragen.');
+    if (r.status === 403 || r.status === 404) throw new Error('Keine Schreibrechte – Token braucht „Contents: Read and write“.');
+    return r;
+  }
+  const json = async r => { if (!r.ok) throw new Error('GitHub-Fehler ' + r.status); return r.json(); };
+
+  // Aktuellen Stand direkt aus dem Repo laden (ohne Pages-Cache)
+  async function fetchList(ref = BRANCH) {
+    const data = await json(await api(`/contents/${PATH}?ref=${ref}`));
     gifs = JSON.parse(decode(data.content));
   }
 
@@ -147,21 +151,26 @@
     setStatus('Speichere …');
     try {
       for (let attempt = 0; attempt < 3; attempt++) {
-        await fetchList();
+        // Liste und alle Vorschauseiten (1/, 2/, …) in einem einzigen Commit schreiben
+        const head = (await json(await api(`/git/ref/heads/${BRANCH}`))).object.sha;
+        await fetchList(head);
         const next = change(gifs.slice());
-        const r = await fetch(API, {
-          method: 'PUT',
-          headers: { ...headers(), 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            message: doneText === 'Entfernt' ? 'Remove GIF' : 'Add GIF',
-            content: encode(JSON.stringify(next, null, 2) + '\n'),
-            sha, branch: BRANCH
-          })
-        });
+        const root = await json(await api(`/contents/?ref=${head}`));
+        const oldPages = root.filter(f => f.type === 'dir' && /^[0-9]+$/.test(f.name)).map(f => +f.name);
+        const tree = [
+          { path: PATH, mode: '100644', type: 'blob', content: JSON.stringify(next, null, 2) + '\n' },
+          ...next.map((g, i) => ({ path: `${i + 1}/index.html`, mode: '100644', type: 'blob', content: sharePage(i + 1, g) })),
+          ...oldPages.filter(n => n > next.length).map(n => ({ path: `${n}/index.html`, mode: '100644', type: 'blob', sha: null }))
+        ];
+        const baseTree = (await json(await api(`/git/commits/${head}`))).tree.sha;
+        const newTree = await json(await api('/git/trees', { method: 'POST', body: JSON.stringify({ base_tree: baseTree, tree }) }));
+        const commit = await json(await api('/git/commits', { method: 'POST', body: JSON.stringify({
+          message: doneText === 'Entfernt' ? 'Remove GIF' : 'Add GIF', tree: newTree.sha, parents: [head]
+        }) }));
+        // Ohne force: schlägt fehl, wenn jemand anderes inzwischen gepusht hat → nochmal versuchen
+        const r = await api(`/git/refs/heads/${BRANCH}`, { method: 'PATCH', body: JSON.stringify({ sha: commit.sha }) });
         if (r.status === 409 || r.status === 422) continue;
-        if (r.status === 401 || r.status === 403 || r.status === 404) throw new Error('Keine Schreibrechte – Token braucht „Contents: Read and write“.');
-        if (!r.ok) throw new Error('GitHub-Fehler ' + r.status);
-        sha = (await r.json()).content.sha;
+        await json(r);
         gifs = next;
         render();
         setStatus(doneText + '. Auf der Seite sichtbar in ca. 1 Minute.', 'ok');

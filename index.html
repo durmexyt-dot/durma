@@ -3,7 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>GIFs</title>
+  <title>OKANO ♥️</title>
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="OKANO ♥️">
+  <meta property="og:url" content="https://durmexyt-dot.github.io/durma/">
   <style>
     * { box-sizing: border-box; margin: 0; }
     html, body { height: 100%; background: #000; overflow: hidden; }
@@ -62,13 +65,15 @@
     let index = 0;
 
     // Einträge in gifs.json sind entweder Dateinamen im Ordner gifs/ oder komplette URLs
-    const src = name => /^https?:\/\//.test(name) ? name : 'gifs/' + name;
+    // Basis merken: die Adresszeile wechselt beim Blättern auf /1/, /2/, … (teilbare Links mit Vorschau)
+    const BASE = new URL('.', location.href);
+    const src = name => /^https?:\/\//.test(name) ? name : new URL('gifs/' + name, BASE).href;
 
     function show(i) {
       index = (i + gifs.length) % gifs.length;
       img.src = src(gifs[index]);
       counter.textContent = (index + 1) + ' / ' + gifs.length;
-      history.replaceState(null, '', '#' + (index + 1));
+      history.replaceState(null, '', new URL((index + 1) + '/', BASE).href);
       // Nachbarn vorladen, damit das Wechseln sofort geht
       [index + 1, index - 1].forEach(n => { new Image().src = src(gifs[(n + gifs.length) % gifs.length]); });
     }
@@ -127,7 +132,7 @@
       })
       .catch(() => {
         const msg = document.getElementById('msg');
-        msg.innerHTML = 'Noch keine GIFs.&nbsp;<a href="new/" style="color:#fff">Hier hinzufügen</a>';
+        msg.innerHTML = `Noch keine GIFs.&nbsp;<a href="${new URL('new/', BASE).href}" style="color:#fff">Hier hinzufügen</a>`;
         msg.style.display = 'flex';
         document.querySelectorAll('.nav, #counter, #credit').forEach(el => el.hidden = true);
       });
