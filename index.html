@@ -32,6 +32,11 @@
     }
     body.idle .nav, body.idle #counter, body.idle #fs { opacity: 0; }
     body.idle { cursor: none; }
+    #credit {
+      position: fixed; bottom: max(16px, env(safe-area-inset-bottom)); right: max(16px, env(safe-area-inset-right));
+      font-size: 12px; color: rgba(255, 255, 255, .6); text-decoration: none; transition: opacity .3s;
+    }
+    body.idle #credit { opacity: 0; }
     #msg { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 16px; text-align: center; }
   </style>
 </head>
@@ -41,6 +46,7 @@
   <button id="next" class="nav" aria-label="Nächstes GIF">&#8250;</button>
   <button id="fs" aria-label="Vollbild">&#x26F6;</button>
   <div id="counter"></div>
+  <a id="credit" href="https://giphy.com" target="_blank" rel="noopener">via GIPHY</a>
   <div id="msg"></div>
 
   <script>
@@ -49,13 +55,16 @@
     let gifs = [];
     let index = 0;
 
+    // Einträge in gifs.json sind entweder Dateinamen im Ordner gifs/ oder komplette URLs
+    const src = name => /^https?:\/\//.test(name) ? name : 'gifs/' + name;
+
     function show(i) {
       index = (i + gifs.length) % gifs.length;
-      img.src = 'gifs/' + gifs[index];
+      img.src = src(gifs[index]);
       counter.textContent = (index + 1) + ' / ' + gifs.length;
       history.replaceState(null, '', '#' + (index + 1));
       // Nachbarn vorladen, damit das Wechseln sofort geht
-      [index + 1, index - 1].forEach(n => { new Image().src = 'gifs/' + gifs[(n + gifs.length) % gifs.length]; });
+      [index + 1, index - 1].forEach(n => { new Image().src = src(gifs[(n + gifs.length) % gifs.length]); });
     }
 
     const next = () => show(index + 1);
