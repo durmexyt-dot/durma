@@ -121,9 +121,9 @@
       })
       .catch(() => {
         const msg = document.getElementById('msg');
-        msg.textContent = 'Keine GIFs gefunden. Lege GIFs in den Ordner "gifs" und trage sie in gifs/gifs.json ein.';
+        msg.innerHTML = 'Noch keine GIFs.&nbsp;<a href="new/" style="color:#fff">Hier hinzufügen</a>';
         msg.style.display = 'flex';
-        document.querySelectorAll('.nav, #counter').forEach(el => el.hidden = true);
+        document.querySelectorAll('.nav, #counter, #credit').forEach(el => el.hidden = true);
       });
   </script>
 </body>

@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>GIFs verwalten</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 24px 16px 48px; background: #111; color: #eee; font-family: system-ui, sans-serif; }
+    main { max-width: 640px; margin: 0 auto; }
+    h1 { font-size: 22px; margin: 0 0 20px; }
+    a { color: #8cf; }
+    label { display: block; font-size: 13px; color: #aaa; margin-bottom: 6px; }
+    .row { display: flex; gap: 8px; margin-bottom: 16px; }
+    input {
+      flex: 1; min-width: 0; padding: 12px; font-size: 16px; border-radius: 8px;
+      border: 1px solid #333; background: #1c1c1c; color: #eee;
+    }
+    button {
+      padding: 12px 18px; font-size: 16px; border: 0; border-radius: 8px; cursor: pointer;
+      background: #3a7bfd; color: #fff; white-space: nowrap;
+    }
+    button:disabled { opacity: .5; cursor: default; }
+    button.ghost { background: #2a2a2a; }
+    #status { min-height: 1.4em; margin: 0 0 16px; font-size: 14px; }
+    #status.error { color: #ff7b7b; }
+    #status.ok { color: #7bdc8f; }
+    details { margin-bottom: 24px; background: #1a1a1a; border-radius: 8px; padding: 12px; }
+    summary { cursor: pointer; }
+    details p { font-size: 13px; color: #aaa; line-height: 1.5; }
+    ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+    li { display: flex; align-items: center; gap: 12px; background: #1a1a1a; border-radius: 8px; padding: 8px; }
+    li img { width: 96px; height: 64px; object-fit: cover; border-radius: 6px; background: #000; flex: none; }
+    li span { flex: 1; min-width: 0; font-size: 12px; color: #aaa; overflow-wrap: anywhere; }
+    li button { background: #c0392b; padding: 8px 12px; font-size: 14px; }
+    .empty { color: #777; font-size: 14px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>GIFs verwalten · <a href="../">Ansehen</a></h1>
+
+  <details id="tokenBox">
+    <summary>GitHub-Token</summary>
+    <p>
+      Wird nur in diesem Browser gespeichert und nur an api.github.com geschickt.
+      Benötigt einen Fine-grained Token für <b>durmexyt-dot/durma</b> mit
+      <b>Contents: Read and write</b>
+      (<a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">hier erstellen</a>).
+    </p>
+    <div class="row">
+      <input id="token" type="password" placeholder="github_pat_…" autocomplete="off">
+      <button id="saveToken" class="ghost">Speichern</button>
+    </div>
+  </details>
+
+  <label for="url">GIF-Link (GIPHY-Seite oder direkter .gif-Link)</label>
+  <div class="row">
+    <input id="url" type="url" placeholder="https://giphy.com/gifs/…" autocomplete="off">
+    <button id="create">Create</button>
+  </div>
+  <p id="status"></p>
+
+  <ul id="list"></ul>
+</main>
+
+<script>
+  const OWNER = 'durmexyt-dot', REPO = 'durma', BRANCH = 'dev', PATH = 'gifs/gifs.json';
+  const API = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${PATH}`;
+
+  const $ = id => document.getElementById(id);
+  const tokenInput = $('token'), urlInput = $('url'), createBtn = $('create'), listEl = $('list'), statusEl = $('status');
+
+  let gifs = [];
+  let sha = null;
+
+  function load(key) { try { return localStorage.getItem(key) || ''; } catch (e) { return ''; } }
+
+  function setStatus(text, kind = '') { statusEl.textContent = text; statusEl.className = kind; }
+
+  const src = name => /^https?:\/\//.test(name) ? name : '../gifs/' + name;
+
+  // GIPHY-Seitenlinks (giphy.com/gifs/titel-ID) in den direkten GIF-Link umwandeln
+  function normalize(input) {
+    let url;
+    try { url = new URL(input.trim()); } catch (e) { return null; }
+    if (/(^|\.)giphy\.com$/.test(url.hostname)) {
+      const m = url.pathname.match(/\/(?:gifs|media|embed)\/(?:[^/]*-)?([A-Za-z0-9]+)(?:\/|$)/);
+      if (m) return `https://media.giphy.com/media/${m[1]}/giphy.gif`;
+    }
+    return url.href;
+  }
+
+  function headers() {
+    const h = { Accept: 'application/vnd.github+json' };
+    const t = tokenInput.value.trim();
+    if (t) h.Authorization = 'Bearer ' + t;
+    return h;
+  }
+
+  function decode(b64) {
+    const bytes = Uint8Array.from(atob(b64.replace(/\n/g, '')), c => c.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  }
+  function encode(text) {
+    let bin = '';
+    new TextEncoder().encode(text).forEach(b => bin += String.fromCharCode(b));
+    return btoa(bin);
+  }
+
+  function render() {
+    listEl.innerHTML = '';
+    if (!gifs.length) {
+      listEl.innerHTML = '<li class="empty">Noch keine GIFs in der Liste.</li>';
+      return;
+    }
+    gifs.forEach((g, i) => {
+      const li = document.createElement('li');
+      const img = document.createElement('img');
+      img.src = src(g); img.alt = ''; img.loading = 'lazy';
+      const span = document.createElement('span');
+      span.textContent = (i + 1) + '. ' + g;
+      const del = document.createElement('button');
+      del.textContent = 'Entfernen';
+      del.addEventListener('click', () => save(list => list.filter(x => x !== g), 'Entfernt'));
+      li.append(img, span, del);
+      listEl.append(li);
+    });
+  }
+
+  // Aktuellen Stand direkt aus dem Repo laden (ohne Pages-Cache)
+  async function fetchList() {
+    const r = await fetch(`${API}?ref=${BRANCH}&t=${Date.now()}`, { headers: headers(), cache: 'no-store' });
+    if (r.status === 401) throw new Error('Token ungültig.');
+    if (r.status === 404) throw new Error(tokenInput.value.trim() ? 'Kein Zugriff – hat der Token Rechte auf das Repo?' : 'Bitte zuerst den GitHub-Token eintragen.');
+    if (!r.ok) throw new Error('GitHub-Fehler ' + r.status);
+    const data = await r.json();
+    sha = data.sha;
+    gifs = JSON.parse(decode(data.content));
+  }
+
+  // Liste ändern und ins Repo schreiben; bei Konflikt neu laden und nochmal versuchen
+  async function save(change, doneText) {
+    if (!tokenInput.value.trim()) { $('tokenBox').open = true; setStatus('Bitte zuerst den GitHub-Token eintragen.', 'error'); return; }
+    document.querySelectorAll('button').forEach(b => b.disabled = true);
+    setStatus('Speichere …');
+    try {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await fetchList();
+        const next = change(gifs.slice());
+        const r = await fetch(API, {
+          method: 'PUT',
+          headers: { ...headers(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: doneText === 'Entfernt' ? 'Remove GIF' : 'Add GIF',
+            content: encode(JSON.stringify(next, null, 2) + '\n'),
+            sha, branch: BRANCH
+          })
+        });
+        if (r.status === 409 || r.status === 422) continue;
+        if (r.status === 401 || r.status === 403 || r.status === 404) throw new Error('Keine Schreibrechte – Token braucht „Contents: Read and write“.');
+        if (!r.ok) throw new Error('GitHub-Fehler ' + r.status);
+        sha = (await r.json()).content.sha;
+        gifs = next;
+        render();
+        setStatus(doneText + '. Auf der Seite sichtbar in ca. 1 Minute.', 'ok');
+        return true;
+      }
+      throw new Error('Konflikt beim Speichern – bitte nochmal versuchen.');
+    } catch (e) {
+      setStatus(e.message, 'error');
+    } finally {
+      document.querySelectorAll('button').forEach(b => b.disabled = false);
+    }
+  }
+
+  createBtn.addEventListener('click', async () => {
+    const url = normalize(urlInput.value);
+    if (!url) { setStatus('Das ist kein gültiger Link.', 'error'); return; }
+    if (gifs.includes(url)) { setStatus('Dieses GIF ist schon in der Liste.', 'error'); return; }
+    if (await save(list => list.includes(url) ? list : [...list, url], 'Hinzugefügt')) urlInput.value = '';
+  });
+  urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') createBtn.click(); });
+
+  $('saveToken').addEventListener('click', async () => {
+    try { localStorage.setItem('gh_token', tokenInput.value.trim()); } catch (e) {}
+    $('tokenBox').open = false;
+    await init();
+  });
+
+  async function init() {
+    setStatus('Lade …');
+    try {
+      await fetchList();
+      setStatus('');
+    } catch (e) {
+      // Ohne Token: öffentliche Liste der Seite anzeigen
+      try { gifs = await (await fetch('../gifs/gifs.json', { cache: 'no-cache' })).json(); } catch (_) { gifs = []; }
+      if (!tokenInput.value.trim()) $('tokenBox').open = true;
+      setStatus(e.message, 'error');
+    }
+    render();
+  }
+
+  tokenInput.value = load('gh_token');
+  init();
+</script>
+</body>
+</html>
