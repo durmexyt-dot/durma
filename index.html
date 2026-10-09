@@ -37,10 +37,16 @@
       font-size: 12px; color: rgba(255, 255, 255, .6); text-decoration: none; transition: opacity .3s;
     }
     body.idle #credit { opacity: 0; }
+    #title {
+      position: fixed; top: 30px; left: 50%; transform: translateX(-50%); z-index: 1000;
+      font-size: 28px; font-weight: 700; letter-spacing: .05em; white-space: nowrap;
+      text-shadow: 0 2px 8px rgba(0, 0, 0, .7); pointer-events: none;
+    }
     #msg { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 16px; text-align: center; }
   </style>
 </head>
 <body>
+  <div id="title">OKANO ♥️</div>
   <div id="stage"><img id="gif" alt=""></div>
   <button id="prev" class="nav" aria-label="Vorheriges GIF">&#8249;</button>
   <button id="next" class="nav" aria-label="Nächstes GIF">&#8250;</button>
