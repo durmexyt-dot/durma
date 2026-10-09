@@ -35,6 +35,15 @@
     li span { flex: 1; min-width: 0; font-size: 12px; color: #aaa; overflow-wrap: anywhere; }
     li button { background: #c0392b; padding: 8px 12px; font-size: 14px; }
     .empty { color: #777; font-size: 14px; }
+    li.added { outline: 1px solid #3a7bfd; }
+    li.added span::before { content: 'NEU · '; color: #8cf; font-weight: 600; }
+    #pushBar {
+      position: sticky; bottom: 16px; margin-top: 20px; display: flex; align-items: center; gap: 8px;
+      padding: 12px; border-radius: 10px; background: #1f2a3d; box-shadow: 0 4px 16px rgba(0, 0, 0, .5);
+    }
+    #pushBar[hidden] { display: none; }
+    #pushInfo { flex: 1; font-size: 14px; }
+    #push { background: #2ea44f; }
   </style>
 </head>
 <body>
@@ -63,6 +72,12 @@
   <p id="status"></p>
 
   <ul id="list"></ul>
+
+  <div id="pushBar" hidden>
+    <span id="pushInfo"></span>
+    <button id="discard" class="ghost">Verwerfen</button>
+    <button id="push">Push</button>
+  </div>
 </main>
 
 <script type="module">
@@ -74,9 +89,21 @@
   const $ = id => document.getElementById(id);
   const tokenInput = $('token'), urlInput = $('url'), createBtn = $('create'), listEl = $('list'), statusEl = $('status');
 
-  let gifs = [];
+  // published = Stand im Repo, draft = lokale Änderungen, die erst mit „Push“ hochgeladen werden
+  let published = [];
+  let draft = [];
 
   function load(key) { try { return localStorage.getItem(key) || ''; } catch (e) { return ''; } }
+
+  // Entwurf überlebt Neuladen der Seite
+  function saveDraft() {
+    try {
+      if (same(draft, published)) localStorage.removeItem('gif_draft');
+      else localStorage.setItem('gif_draft', JSON.stringify(draft));
+    } catch (e) {}
+  }
+  function loadDraft() { try { return JSON.parse(localStorage.getItem('gif_draft')); } catch (e) { return null; } }
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
   function setStatus(text, kind = '') { statusEl.textContent = text; statusEl.className = kind; }
 
@@ -106,20 +133,26 @@
   }
 
   function render() {
+    const added = draft.filter(g => !published.includes(g)).length;
+    const removed = published.filter(g => !draft.includes(g)).length;
+    $('pushBar').hidden = !added && !removed;
+    $('pushInfo').textContent = [added && `${added} neu`, removed && `${removed} entfernt`].filter(Boolean).join(', ') + ' – noch nicht gepusht';
+
     listEl.innerHTML = '';
-    if (!gifs.length) {
+    if (!draft.length) {
       listEl.innerHTML = '<li class="empty">Noch keine GIFs in der Liste.</li>';
       return;
     }
-    gifs.forEach((g, i) => {
+    draft.forEach((g, i) => {
       const li = document.createElement('li');
+      if (!published.includes(g)) li.className = 'added';
       const img = document.createElement('img');
       img.src = src(g); img.alt = ''; img.loading = 'lazy';
       const span = document.createElement('span');
       span.textContent = (i + 1) + '. ' + g;
       const del = document.createElement('button');
       del.textContent = 'Entfernen';
-      del.addEventListener('click', () => save(list => list.filter(x => x !== g), 'Entfernt'));
+      del.addEventListener('click', () => { draft = draft.filter(x => x !== g); saveDraft(); render(); setStatus(''); });
       li.append(img, span, del);
       listEl.append(li);
     });
@@ -141,20 +174,23 @@
   // Aktuellen Stand direkt aus dem Repo laden (ohne Pages-Cache)
   async function fetchList(ref = BRANCH) {
     const data = await json(await api(`/contents/${PATH}?ref=${ref}`));
-    gifs = JSON.parse(decode(data.content));
+    return JSON.parse(decode(data.content));
   }
 
-  // Liste ändern und ins Repo schreiben; bei Konflikt neu laden und nochmal versuchen
-  async function save(change, doneText) {
+  // Alle Änderungen des Entwurfs in einem Commit ins Repo schreiben; bei Konflikt neu laden und nochmal versuchen
+  async function push() {
     if (!tokenInput.value.trim()) { $('tokenBox').open = true; setStatus('Bitte zuerst den GitHub-Token eintragen.', 'error'); return; }
     document.querySelectorAll('button').forEach(b => b.disabled = true);
-    setStatus('Speichere …');
+    setStatus('Pushe …');
     try {
       for (let attempt = 0; attempt < 3; attempt++) {
         // Liste und alle Vorschauseiten (1/, 2/, …) in einem einzigen Commit schreiben
         const head = (await json(await api(`/git/ref/heads/${BRANCH}`))).object.sha;
-        await fetchList(head);
-        const next = change(gifs.slice());
+        // Falls die Liste inzwischen woanders geändert wurde: nur die eigenen Änderungen darauf anwenden
+        const remote = await fetchList(head);
+        const added = draft.filter(g => !published.includes(g));
+        const removed = new Set(published.filter(g => !draft.includes(g)));
+        const next = remote.filter(g => !removed.has(g)).concat(added.filter(g => !remote.includes(g)));
         const root = await json(await api(`/contents/?ref=${head}`));
         const oldPages = root.filter(f => f.type === 'dir' && /^[0-9]+$/.test(f.name)).map(f => +f.name);
         const tree = [
@@ -165,18 +201,20 @@
         const baseTree = (await json(await api(`/git/commits/${head}`))).tree.sha;
         const newTree = await json(await api('/git/trees', { method: 'POST', body: JSON.stringify({ base_tree: baseTree, tree }) }));
         const commit = await json(await api('/git/commits', { method: 'POST', body: JSON.stringify({
-          message: doneText === 'Entfernt' ? 'Remove GIF' : 'Add GIF', tree: newTree.sha, parents: [head]
+          message: `Update GIFs (+${added.length} / -${removed.size})`, tree: newTree.sha, parents: [head]
         }) }));
         // Ohne force: schlägt fehl, wenn jemand anderes inzwischen gepusht hat → nochmal versuchen
         const r = await api(`/git/refs/heads/${BRANCH}`, { method: 'PATCH', body: JSON.stringify({ sha: commit.sha }) });
         if (r.status === 409 || r.status === 422) continue;
         await json(r);
-        gifs = next;
+        published = next;
+        draft = next.slice();
+        saveDraft();
         render();
-        setStatus(doneText + '. Auf der Seite sichtbar in ca. 1 Minute.', 'ok');
-        return true;
+        setStatus('Gepusht. Auf der Seite sichtbar in ca. 1 Minute.', 'ok');
+        return;
       }
-      throw new Error('Konflikt beim Speichern – bitte nochmal versuchen.');
+      throw new Error('Konflikt beim Pushen – bitte nochmal versuchen.');
     } catch (e) {
       setStatus(e.message, 'error');
     } finally {
@@ -184,12 +222,18 @@
     }
   }
 
-  createBtn.addEventListener('click', async () => {
+  createBtn.addEventListener('click', () => {
     const url = normalize(urlInput.value);
     if (!url) { setStatus('Das ist kein gültiger Link.', 'error'); return; }
-    if (gifs.includes(url)) { setStatus('Dieses GIF ist schon in der Liste.', 'error'); return; }
-    if (await save(list => list.includes(url) ? list : [...list, url], 'Hinzugefügt')) urlInput.value = '';
+    if (draft.includes(url)) { setStatus('Dieses GIF ist schon in der Liste.', 'error'); return; }
+    draft.push(url);
+    saveDraft();
+    render();
+    urlInput.value = '';
+    setStatus('Hinzugefügt – mit „Push“ veröffentlichen.', 'ok');
   });
+  $('push').addEventListener('click', push);
+  $('discard').addEventListener('click', () => { draft = published.slice(); saveDraft(); render(); setStatus('Änderungen verworfen.'); });
   urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') createBtn.click(); });
 
   $('saveToken').addEventListener('click', async () => {
@@ -201,14 +245,15 @@
   async function init() {
     setStatus('Lade …');
     try {
-      await fetchList();
+      published = await fetchList();
       setStatus('');
     } catch (e) {
       // Ohne Token: öffentliche Liste der Seite anzeigen
-      try { gifs = await (await fetch('../gifs/gifs.json', { cache: 'no-cache' })).json(); } catch (_) { gifs = []; }
+      try { published = await (await fetch('../gifs/gifs.json', { cache: 'no-cache' })).json(); } catch (_) { published = []; }
       if (!tokenInput.value.trim()) $('tokenBox').open = true;
       setStatus(e.message, 'error');
     }
+    draft = loadDraft() || published.slice();
     render();
   }
 
